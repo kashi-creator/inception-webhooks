@@ -1,0 +1,22 @@
+{
+  "name": "inception-webhooks",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Express service handling Stripe + Calendly webhooks → GHL for Inception Emails (Phase 4).",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test 'test/*.test.js'",
+    "test:integration": "INTEGRATION=1 node --test test/integration.test.js"
+  },
+  "dependencies": {
+    "@inception-emails/ghl-client": "^0.1.0",
+    "express": "^4.21.2",
+    "stripe": "^17.5.0"
+  },
+  "license": "UNLICENSED"
+}
