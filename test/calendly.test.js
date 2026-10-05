@@ -17,8 +17,8 @@ import {
 
 const SIGNING_KEY = 'test_calendly_signing_key_0123456789abcdef';
 
-function buildApp({ ghl, cache, log, signingKey = SIGNING_KEY, now = Date.now }) {
-  const calendlyRouter = createCalendlyRouter({ ghl, idempotencyCache: cache, log, signingKey, now });
+function buildApp({ ghl, cache, log, signingKey = SIGNING_KEY, now = Date.now, allowedEventTypes }) {
+  const calendlyRouter = createCalendlyRouter({ ghl, idempotencyCache: cache, log, signingKey, now, allowedEventTypes });
   // No stripe router for Calendly tests — pass a no-op placeholder.
   const stripeRouter = express.Router();
   return createApp({ stripeRouter, calendlyRouter, log });
@@ -215,4 +215,39 @@ test('calendly: invitee.canceled with no matching contact logs warn, no GHL writ
   await new Promise((r) => setTimeout(r, 50));
   const writeCalls = ghl.calls.filter(([m]) => m === 'addTags' || m === 'setCustomFields' || m === 'upsertContact');
   assert.equal(writeCalls.length, 0);
+});
+
+const MSP_EVENT = 'https://api.calendly.com/event_types/msp-growth';
+
+function bookingPayload({ eventType, email, createdAt }) {
+  return JSON.stringify({
+    event: 'invitee.created',
+    created_at: createdAt,
+    payload: {
+      scheduled_event: { event_type: eventType },
+      invitee: { uri: `https://api.calendly.com/x/${email}`, email, name: 'Pat Owner' },
+    },
+  });
+}
+
+test('calendly: booking on an allowed event type reaches GHL', async () => {
+  const ghl = makeFakeGhl();
+  ghl.queueUpsert({ contactId: 'c_msp', created: true });
+  const log = createLogger({ stream: makeMemoryLog().stream });
+  const app = buildApp({ ghl, cache: makeCache(), log, allowedEventTypes: [MSP_EVENT] });
+  const payload = bookingPayload({ eventType: MSP_EVENT, email: 'owner@msp.example', createdAt: '2026-10-05T18:00:00Z' });
+  await postJson(app, '/webhooks/calendly', payload, { 'calendly-webhook-signature': buildCalendlySig({ rawBody: payload, signingKey: SIGNING_KEY }) });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(ghl.calls[0][0], 'upsertContact');
+});
+
+test('calendly: booking on any other event type is ignored (no GHL calls)', async () => {
+  const ghl = makeFakeGhl();
+  const log = createLogger({ stream: makeMemoryLog().stream });
+  const app = buildApp({ ghl, cache: makeCache(), log, allowedEventTypes: [MSP_EVENT] });
+  const payload = bookingPayload({ eventType: 'https://api.calendly.com/event_types/30min', email: 'friend@example.com', createdAt: '2026-10-05T18:05:00Z' });
+  const res = await postJson(app, '/webhooks/calendly', payload, { 'calendly-webhook-signature': buildCalendlySig({ rawBody: payload, signingKey: SIGNING_KEY }) });
+  assert.equal(res.status, 200);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(ghl.calls.length, 0);
 });

@@ -66,7 +66,17 @@ function splitName(name) {
   return { firstName: name.slice(0, idx), lastName: name.slice(idx + 1) };
 }
 
-export function createCalendlyRouter({ ghl, idempotencyCache, log, signingKey, now = Date.now }) {
+// Calendly sends bookings for every event type on the account (personal calls,
+// other businesses). When allowedEventTypes is set, only those event-type URIs
+// reach GHL; everything else is acknowledged and dropped.
+function bookedEventType(payload) {
+  return (payload.scheduled_event && payload.scheduled_event.event_type)
+    || (payload.event && payload.event.event_type)
+    || payload.event_type
+    || null;
+}
+
+export function createCalendlyRouter({ ghl, idempotencyCache, log, signingKey, now = Date.now, allowedEventTypes }) {
   if (!ghl) throw new Error('createCalendlyRouter: ghl required');
   if (!idempotencyCache) throw new Error('createCalendlyRouter: idempotencyCache required');
   if (!log) throw new Error('createCalendlyRouter: log required');
@@ -101,6 +111,17 @@ export function createCalendlyRouter({ ghl, idempotencyCache, log, signingKey, n
     const eventType = body.event;
     const payload = body.payload || {};
     const invitee = payload.invitee || {};
+
+    if (allowedEventTypes && !allowedEventTypes.includes(bookedEventType(payload))) {
+      res.status(200).json({ received: true, ignored: 'event_type' });
+      log.info('calendly.event_type_ignored', {
+        route: '/webhooks/calendly',
+        event_type: eventType,
+        invitee_uri: invitee.uri,
+        latency_ms: Date.now() - t0,
+      });
+      return;
+    }
 
     const idemKey = `${body.created_at || ''}|${invitee.uri || invitee.email || ''}`;
     const seen = idempotencyCache.seen(idemKey);

@@ -27,6 +27,8 @@ export const TIER_BY_PAYMENT_LINK = Object.freeze({
 
 export const DEFAULT_TIER = 'Starter';
 
+const MSP_GROWTH_CALL_EVENT_TYPE = 'https://api.calendly.com/event_types/7f993982-4878-4966-bc79-4be32a0346b1';
+
 export function tierForPaymentLink(paymentLinkId) {
   if (!paymentLinkId) return { tier: DEFAULT_TIER, fallback: true };
   const tier = TIER_BY_PAYMENT_LINK[paymentLinkId];
@@ -51,6 +53,9 @@ export function readEnv(env = process.env) {
     pit: env.GHL_LOCATION_API_KEY,
     stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET,
     calendlyWebhookSigningKey: env.CALENDLY_WEBHOOK_SIGNING_KEY,
+    // Only these Calendly event types feed GHL. Default: "MSP Growth Call".
+    calendlyAllowedEventTypes: (env.CALENDLY_ALLOWED_EVENT_TYPES || MSP_GROWTH_CALL_EVENT_TYPE)
+      .split(',').map((s) => s.trim()).filter(Boolean),
     // Optional. If absent, the deletion/payment-failed email fallback (which
     // calls Stripe's customers API to recover an email) is skipped — primary
     // lookup by stripe_customer_id custom field is unaffected.

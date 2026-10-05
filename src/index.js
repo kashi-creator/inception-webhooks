@@ -55,6 +55,7 @@ function main() {
     idempotencyCache,
     log,
     signingKey: env.calendlyWebhookSigningKey,
+    allowedEventTypes: env.calendlyAllowedEventTypes,
   });
   const app = createApp({ stripeRouter, calendlyRouter, log });
 
