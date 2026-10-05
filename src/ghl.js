@@ -83,6 +83,16 @@ export function createGhl({ pit, locationId = LOCATION_ID, fetchImpl, detectSche
     createOpportunity: (input) => client.createOpportunity(input),
     moveOpportunity: (id, input) => client.moveOpportunity(id, input),
 
+    /** Writes standard address fields (city/state) — not in the v0.1 client's update input. */
+    async setAddress(contactId, { city, state } = {}) {
+      if (!contactId) throw new Error('setAddress: contactId required');
+      const body = {};
+      if (city) body.city = city;
+      if (state) body.state = state;
+      if (Object.keys(body).length === 0) return;
+      await rawRequest({ pit, method: 'PUT', path: `/contacts/${contactId}`, body, fetchImpl });
+    },
+
     // ---- Phase 4 extension for stripe_customer_id ----
 
     /**

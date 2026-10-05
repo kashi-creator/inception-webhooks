@@ -38,6 +38,7 @@ export function makeFakeGhl(overrides = {}) {
       return { opportunityId: 'opp_default', pipelineId: 'pipe_default', pipelineStageId: 'stage_default' };
     },
     async moveOpportunity(id, input) { calls.push(['moveOpportunity', id, input]); return { opportunityId: id, pipelineId: 'p', pipelineStageId: 's' }; },
+    async setAddress(id, addr) { calls.push(['setAddress', id, { ...addr }]); },
     async setStripeCustomerId(id, stripeCustomerId) { calls.push(['setStripeCustomerId', id, stripeCustomerId]); },
     async findContactByStripeCustomerId(stripeCustomerId) {
       calls.push(['findContactByStripeCustomerId', stripeCustomerId]);

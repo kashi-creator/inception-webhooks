@@ -60,6 +60,9 @@ export function readEnv(env = process.env) {
     // calls Stripe's customers API to recover an email) is skipped — primary
     // lookup by stripe_customer_id custom field is unaffected.
     stripeApiKey: env.STRIPE_API_KEY || null,
+    // Optional. Shared key in each PhoneBurner disposition webhook URL; the
+    // /webhooks/phoneburner routes stay unmounted without it.
+    phoneburnerWebhookKey: env.PHONEBURNER_WEBHOOK_KEY || null,
     port: Number(env.PORT) || 3000,
     nodeEnv: env.NODE_ENV || 'production',
     missing,

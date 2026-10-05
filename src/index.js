@@ -10,6 +10,7 @@ import { createGhl } from './ghl.js';
 import { createIdempotencyCache } from './idempotency.js';
 import { createStripeRouter } from './stripe.js';
 import { createCalendlyRouter } from './calendly.js';
+import { createPhoneBurnerRouter } from './phoneburner.js';
 import { createApp } from './app.js';
 
 function main() {
@@ -57,7 +58,15 @@ function main() {
     signingKey: env.calendlyWebhookSigningKey,
     allowedEventTypes: env.calendlyAllowedEventTypes,
   });
-  const app = createApp({ stripeRouter, calendlyRouter, log });
+  const phoneburnerRouter = createPhoneBurnerRouter({
+    ghl,
+    log,
+    webhookKey: env.phoneburnerWebhookKey,
+  });
+  if (!env.phoneburnerWebhookKey) {
+    log.warn('boot.phoneburner_key_missing', { err: 'PHONEBURNER_WEBHOOK_KEY unset — /webhooks/phoneburner disabled' });
+  }
+  const app = createApp({ stripeRouter, calendlyRouter, phoneburnerRouter, log });
 
   app.listen(env.port, () => {
     log.info('boot.listening', { route: `:${env.port}`, ok: true });
