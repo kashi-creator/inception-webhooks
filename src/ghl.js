@@ -73,7 +73,14 @@ export function createGhl({ pit, locationId = LOCATION_ID, fetchImpl, detectSche
 
   const ext = {
     // ---- passthrough to the typed client ----
-    upsertContact: (input) => client.upsertContact(input),
+    // GHL's /contacts/upsert REPLACES the tag list on an existing contact, and
+    // the v0.1 client sends `source` there as `tags`. Strip it and add the
+    // source tag through the additive tags endpoint instead.
+    async upsertContact({ source, ...input }) {
+      const result = await client.upsertContact(input);
+      if (source) await client.addTags(result.contactId, [source]);
+      return result;
+    },
     findContactByEmail: (email) => client.findContactByEmail(email),
     findContactByPhone: (phone) => client.findContactByPhone(phone),
     updateContact: (id, input) => client.updateContact(id, input),
