@@ -274,3 +274,48 @@ test('calendly: booking on any other event type is ignored (no GHL calls)', asyn
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(ghl.calls.length, 0);
 });
+
+test('calendly: booking answers fill phone + website and land as a GHL note', async () => {
+  const ghl = makeFakeGhl();
+  ghl.queueUpsert({ contactId: 'c_qa', created: true });
+  const cache = makeCache();
+  const { stream } = makeMemoryLog();
+  const app = buildApp({ ghl, cache, log: createLogger({ stream }) });
+  const payload = JSON.stringify({
+    event: 'invitee.created',
+    created_at: '2026-10-06T21:00:00.000Z',
+    payload: {
+      email: 'owner@msp.com',
+      name: 'Pat Owner',
+      uri: 'https://api.calendly.com/scheduled_events/E7/invitees/I7',
+      questions_and_answers: [
+        { question: "What's the best phone number to reach you at?", answer: '+1 813 555 0101', position: 0 },
+        { question: 'Your company website?', answer: 'patmsp.com', position: 1 },
+        { question: 'How many people are on your team?', answer: '5–25', position: 2 },
+      ],
+    },
+  });
+  const sig = buildCalendlySig({ rawBody: payload, signingKey: SIGNING_KEY });
+  await postJson(app, '/webhooks/calendly', payload, { 'calendly-webhook-signature': sig });
+  await new Promise((r) => setTimeout(r, 50));
+  const fields = ghl.calls.find((c) => c[0] === 'setContactFields');
+  assert.deepEqual(fields, ['setContactFields', 'c_qa', { phone: '+1 813 555 0101', website: 'patmsp.com' }]);
+  const note = ghl.calls.find((c) => c[0] === 'addNote');
+  assert.equal(note[1], 'c_qa');
+  assert.match(note[2], /How many people are on your team\?\n5–25/);
+});
+
+test('calendly: no answers means no note and no field write', async () => {
+  const ghl = makeFakeGhl();
+  const cache = makeCache();
+  const { stream } = makeMemoryLog();
+  const app = buildApp({ ghl, cache, log: createLogger({ stream }) });
+  const payload = JSON.stringify({
+    event: 'invitee.created', created_at: '2026-10-06T21:01:00.000Z',
+    payload: { email: 'x@y.com', name: 'X', uri: 'https://api.calendly.com/scheduled_events/E8/invitees/I8' },
+  });
+  const sig = buildCalendlySig({ rawBody: payload, signingKey: SIGNING_KEY });
+  await postJson(app, '/webhooks/calendly', payload, { 'calendly-webhook-signature': sig });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(!ghl.calls.some((c) => c[0] === 'addNote' || c[0] === 'setContactFields'));
+});

@@ -116,6 +116,23 @@ export function createGhl({ pit, locationId = LOCATION_ID, fetchImpl, detectSche
       await rawRequest({ pit, method: 'PUT', path: `/contacts/${contactId}`, body, fetchImpl });
     },
 
+    /** Writes standard phone/website fields from booking answers. */
+    async setContactFields(contactId, { phone, website } = {}) {
+      if (!contactId) throw new Error('setContactFields: contactId required');
+      const body = {};
+      if (phone) body.phone = phone;
+      if (website) body.website = website;
+      if (Object.keys(body).length === 0) return;
+      await rawRequest({ pit, method: 'PUT', path: `/contacts/${contactId}`, body, fetchImpl });
+    },
+
+    /** Adds a note to the contact's record. */
+    async addNote(contactId, body) {
+      if (!contactId) throw new Error('addNote: contactId required');
+      if (!body) return;
+      await rawRequest({ pit, method: 'POST', path: `/contacts/${contactId}/notes`, body: { body }, fetchImpl });
+    },
+
     // ---- Phase 4 extension for stripe_customer_id ----
 
     /**

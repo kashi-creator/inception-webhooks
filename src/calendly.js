@@ -206,6 +206,29 @@ async function handleInviteeCreated({ ghl, log, body, t0 }) {
     log.warn('calendly.opportunity_exists', { route: '/webhooks/calendly', contact_id: contactId, err: msg });
   }
 
+  // Booking-page answers: phone and website go on the contact (Erik calls
+  // back from GHL); the full set lands as a note for call prep.
+  const qa = payload.questions_and_answers || invitee.questions_and_answers || [];
+  const answered = qa.filter((q) => q && q.question && String(q.answer || '').trim());
+  if (answered.length) {
+    const fields = {};
+    const find = (re) => answered.find((q) => re.test(q.question));
+    const phone = find(/phone/i);
+    const website = find(/website/i);
+    if (phone) fields.phone = String(phone.answer).trim();
+    if (website) fields.website = String(website.answer).trim();
+    if (Object.keys(fields).length) {
+      // A phone GHL rejects shouldn't cost us the note.
+      try { await ghl.setContactFields(contactId, fields); } catch (err) {
+        log.warn('calendly.answers_fields_failed', { route: '/webhooks/calendly', contact_id: contactId, err: err && err.message ? err.message : String(err) });
+      }
+    }
+    const lines = answered
+      .sort((a, b) => (a.position || 0) - (b.position || 0))
+      .map((q) => `${q.question}\n${String(q.answer).trim()}`);
+    await ghl.addNote(contactId, `MSP Growth Call booking answers\n\n${lines.join('\n\n')}`);
+  }
+
   log.info('calendly.invitee_created.ok', {
     route: '/webhooks/calendly',
     event_type: body.event,
