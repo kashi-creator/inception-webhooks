@@ -131,12 +131,35 @@ test('calendly: invitee.created creates contact + tags + opportunity', async () 
     lastName: 'Doe',
     source: 'src:calendly',
   }]);
-  assert.deepEqual(calls[1], ['addTags', 'c_001', ['stage:disco-booked']]);
-  assert.equal(calls[2][0], 'createOpportunity');
-  assert.equal(calls[2][1].pipeline, 'sales');
-  assert.equal(calls[2][1].stage, 'Disco Booked');
-  assert.equal(calls[2][1].contactId, 'c_001');
-  assert.equal(calls[2][1].name, 'Disco call — lead@example.com');
+  // Remove-then-add so a returning lead who already carries the tag still
+  // fires GHL's "tag added" trigger (Booked Confirmation, booking goals).
+  assert.deepEqual(calls[1], ['removeTags', 'c_001', ['stage:disco-booked']]);
+  assert.deepEqual(calls[2], ['addTags', 'c_001', ['stage:disco-booked']]);
+  assert.equal(calls[3][0], 'createOpportunity');
+  assert.equal(calls[3][1].pipeline, 'sales');
+  assert.equal(calls[3][1].stage, 'Disco Booked');
+  assert.equal(calls[3][1].contactId, 'c_001');
+  assert.equal(calls[3][1].name, 'Disco call — lead@example.com');
+});
+
+test('calendly: a duplicate opportunity is a warning, not a failure', async () => {
+  const ghl = makeFakeGhl({
+    async createOpportunity() { throw new Error('GHL POST /opportunities/ failed: HTTP 400 — Can not create duplicate opportunity for the contact.'); },
+  });
+  const cache = makeCache();
+  const { lines, stream } = makeMemoryLog();
+  const log = createLogger({ stream });
+  const app = buildApp({ ghl, cache, log });
+  const payload = JSON.stringify({
+    event: 'invitee.created',
+    created_at: '2026-10-06T20:12:19.000Z',
+    payload: { invitee: { uri: 'https://api.calendly.com/scheduled_events/E9/invitees/I9', email: 'back@example.com', name: 'Re Turn' } },
+  });
+  const sig = buildCalendlySig({ rawBody: payload, signingKey: SIGNING_KEY });
+  await postJson(app, '/webhooks/calendly', payload, { 'calendly-webhook-signature': sig });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(lines.some((l) => l.msg === 'calendly.invitee_created.ok'));
+  assert.ok(!lines.some((l) => l.msg === 'calendly.handler_failed'));
 });
 
 test('calendly: duplicate invitee.uri within ttl is idempotent (no second GHL call)', async () => {

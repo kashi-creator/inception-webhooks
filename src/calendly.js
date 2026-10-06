@@ -185,14 +185,26 @@ async function handleInviteeCreated({ ghl, log, body, t0 }) {
     source: 'src:calendly',
   });
 
+  // Remove-then-add: a returning lead who already carries the tag would
+  // otherwise not fire GHL's "tag added" trigger (Booked Confirmation, and the
+  // exit-on-booking goals in the other MSP workflows).
+  await ghl.removeTags(contactId, ['stage:disco-booked']);
   await ghl.addTags(contactId, ['stage:disco-booked']);
 
-  const opp = await ghl.createOpportunity({
-    pipeline: 'sales',
-    stage: 'Disco Booked',
-    contactId,
-    name: `Disco call — ${email}`,
-  });
+  // A returning lead already has a Sales opportunity; GHL refuses a second one.
+  let opp = null;
+  try {
+    opp = await ghl.createOpportunity({
+      pipeline: 'sales',
+      stage: 'Disco Booked',
+      contactId,
+      name: `Disco call — ${email}`,
+    });
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    if (!/duplicate opportunity/i.test(msg)) throw err;
+    log.warn('calendly.opportunity_exists', { route: '/webhooks/calendly', contact_id: contactId, err: msg });
+  }
 
   log.info('calendly.invitee_created.ok', {
     route: '/webhooks/calendly',
