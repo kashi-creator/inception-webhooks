@@ -29,3 +29,24 @@ test('ghl: upsertContact never sends tags to /contacts/upsert; source is added a
   const tagPost = log.find((r) => r.method === 'POST' && r.path === '/contacts/c1/tags');
   assert.deepEqual(tagPost && tagPost.body.tags, ['src:phoneburner']);
 });
+
+// GHL rejects a phone lookup on /contacts/search/duplicate (422 "property phone
+// should not exist"), which broke every new PhoneBurner contact that had a phone.
+test('ghl: upsertContact with a phone never does a phone duplicate lookup', async () => {
+  const log = [];
+  const base = fakeFetch(log);
+  const fetchImpl = async (url, init = {}) => {
+    const u = new URL(String(url));
+    if (u.pathname.includes('/contacts/search/duplicate') && u.searchParams.has('phone')) {
+      log.push({ method: 'GET', path: u.pathname, phoneLookup: true });
+      return new Response(JSON.stringify({ message: ['property phone should not exist'] }), { status: 422 });
+    }
+    return base(url, init);
+  };
+  const ghl = createGhl({ pit: 'pit-test', fetchImpl, detectSchemaDrift: false });
+  const { contactId } = await ghl.upsertContact({ email: 'new@b.com', phone: '8135550142', firstName: 'N', source: 'src:phoneburner' });
+  assert.equal(contactId, 'c1');
+  assert.ok(!log.some((r) => r.phoneLookup), 'no phone duplicate lookup');
+  const upsert = log.find((r) => r.path.endsWith('/contacts/upsert'));
+  assert.equal(upsert.body.phone, '8135550142');
+});

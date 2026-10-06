@@ -15,6 +15,9 @@
 import { createGhlClient } from '@inception-emails/ghl-client';
 import { STRIPE_CUSTOMER_ID_FIELD, LOCATION_ID } from './config.js';
 
+const DNC_TAGS = ['compliance:dnc', 'DNC'];
+const isDnc = (tags) => Array.isArray(tags) && tags.some((t) => DNC_TAGS.includes(t));
+
 const API_BASE = 'https://services.leadconnectorhq.com';
 const API_VERSION = '2021-07-28';
 
@@ -76,10 +79,23 @@ export function createGhl({ pit, locationId = LOCATION_ID, fetchImpl, detectSche
     // GHL's /contacts/upsert REPLACES the tag list on an existing contact, and
     // the v0.1 client sends `source` there as `tags`. Strip it and add the
     // source tag through the additive tags endpoint instead.
+    // It also never looks a contact up by phone: GHL rejects a phone query on
+    // /contacts/search/duplicate (422 "property phone should not exist"), which
+    // the v0.1 client does whenever the email lookup misses. /contacts/upsert
+    // de-duplicates on phone by itself.
     async upsertContact({ source, ...input }) {
-      const result = await client.upsertContact(input);
-      if (source) await client.addTags(result.contactId, [source]);
-      return result;
+      if (!input.email && !input.phone) throw new Error('upsertContact: email or phone required');
+      const existing = input.email ? await client.findContactByEmail(input.email) : null;
+      if (existing && isDnc(existing.tags)) return { contactId: existing.id, created: false };
+      const body = { locationId };
+      for (const k of ['email', 'phone', 'firstName', 'lastName', 'companyName']) {
+        if (input[k] !== undefined) body[k] = input[k];
+      }
+      const res = await rawRequest({ pit, method: 'POST', path: '/contacts/upsert', body, fetchImpl });
+      const contact = res && res.contact;
+      if (!contact || !contact.id) throw new Error('GHL upsert response missing contact');
+      if (source && !isDnc(contact.tags)) await client.addTags(contact.id, [source]);
+      return { contactId: contact.id, created: Boolean(res.new) };
     },
     findContactByEmail: (email) => client.findContactByEmail(email),
     findContactByPhone: (phone) => client.findContactByPhone(phone),
