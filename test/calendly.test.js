@@ -319,3 +319,81 @@ test('calendly: no answers means no note and no field write', async () => {
   await new Promise((r) => setTimeout(r, 50));
   assert.ok(!ghl.calls.some((c) => c[0] === 'addNote' || c[0] === 'setContactFields'));
 });
+
+function scheduledPayload({ email, createdAt, scheduledEvent, timezone }) {
+  return JSON.stringify({
+    event: 'invitee.created',
+    created_at: createdAt,
+    payload: {
+      email, name: 'Pat Owner', timezone,
+      uri: `https://api.calendly.com/scheduled_events/S/invitees/${email}`,
+      scheduled_event: scheduledEvent,
+    },
+  });
+}
+
+async function postScheduled(app, payload) {
+  const sig = buildCalendlySig({ rawBody: payload, signingKey: SIGNING_KEY });
+  await postJson(app, '/webhooks/calendly', payload, { 'calendly-webhook-signature': sig });
+  await new Promise((r) => setTimeout(r, 50));
+}
+
+test('calendly: call time + Zoom link land on Call Date / Meeting Link before the booked tag', async () => {
+  const ghl = makeFakeGhl();
+  ghl.queueUpsert({ contactId: 'c_cd', created: true });
+  const app = buildApp({ ghl, cache: makeCache(), log: createLogger({ stream: makeMemoryLog().stream }) });
+  await postScheduled(app, scheduledPayload({
+    email: 'cd@msp.com', createdAt: '2026-10-19T15:00:00.000Z', timezone: 'America/New_York',
+    scheduledEvent: {
+      start_time: '2026-10-21T18:30:00.000000Z',
+      location: { type: 'zoom', join_url: 'https://us02web.zoom.us/j/123456789' },
+    },
+  }));
+  const idx = ghl.calls.findIndex((c) => c[0] === 'setCustomFieldValues');
+  assert.ok(idx >= 0, 'custom fields written');
+  assert.deepEqual(ghl.calls[idx], ['setCustomFieldValues', 'c_cd', [
+    { id: 'gt9XuAP9kQLRurPmRFXD', key: 'call_date', value: 'Wednesday, October 21 at 2:30 PM EDT' },
+    { id: 'mb0boKK8jGwIffI6cyrA', key: 'meeting_link', value: 'https://us02web.zoom.us/j/123456789' },
+  ]]);
+  // Booked Confirmation fires on the tag and merges these fields, so they must exist first.
+  const tagIdx = ghl.calls.findIndex((c) => c[0] === 'addTags' && c[2].includes('stage:disco-booked'));
+  assert.ok(idx < tagIdx, 'fields written before stage:disco-booked is added');
+  // Existing behavior unchanged.
+  assert.deepEqual(ghl.calls.find((c) => c[0] === 'removeTags'), ['removeTags', 'c_cd', ['stage:disco-booked']]);
+  assert.ok(ghl.calls.some((c) => c[0] === 'createOpportunity'));
+});
+
+test('calendly: Call Date uses the invitee timezone, falling back to Eastern', async () => {
+  const ghl = makeFakeGhl();
+  ghl.queueUpsert({ contactId: 'c_pt', created: true });
+  ghl.queueUpsert({ contactId: 'c_et', created: true });
+  const app = buildApp({ ghl, cache: makeCache(), log: createLogger({ stream: makeMemoryLog().stream }) });
+  const ev = { start_time: '2026-10-21T18:30:00.000000Z', location: { type: 'zoom', join_url: 'https://zoom.us/j/1' } };
+  await postScheduled(app, scheduledPayload({ email: 'pt@msp.com', createdAt: '2026-10-19T15:01:00Z', timezone: 'America/Los_Angeles', scheduledEvent: ev }));
+  await postScheduled(app, scheduledPayload({ email: 'et@msp.com', createdAt: '2026-10-19T15:02:00Z', timezone: 'Not/AZone', scheduledEvent: ev }));
+  const writes = ghl.calls.filter((c) => c[0] === 'setCustomFieldValues');
+  assert.equal(writes[0][2][0].value, 'Wednesday, October 21 at 11:30 AM PDT');
+  assert.equal(writes[1][2][0].value, 'Wednesday, October 21 at 2:30 PM EDT');
+});
+
+test('calendly: no scheduled_event means no custom-field write', async () => {
+  const ghl = makeFakeGhl();
+  const app = buildApp({ ghl, cache: makeCache(), log: createLogger({ stream: makeMemoryLog().stream }) });
+  await postScheduled(app, scheduledPayload({ email: 'none@msp.com', createdAt: '2026-10-19T15:03:00Z' }));
+  assert.ok(!ghl.calls.some((c) => c[0] === 'setCustomFieldValues'));
+  assert.ok(ghl.calls.some((c) => c[0] === 'addTags'));
+});
+
+test('calendly: a failed custom-field write still tags and creates the opportunity', async () => {
+  const ghl = makeFakeGhl({ async setCustomFieldValues() { throw new Error('GHL PUT /contacts/x → 422'); } });
+  const { lines, stream } = makeMemoryLog();
+  const app = buildApp({ ghl, cache: makeCache(), log: createLogger({ stream }) });
+  await postScheduled(app, scheduledPayload({
+    email: 'fail@msp.com', createdAt: '2026-10-19T15:04:00Z', timezone: 'America/New_York',
+    scheduledEvent: { start_time: '2026-10-21T18:30:00Z', location: { join_url: 'https://zoom.us/j/2' } },
+  }));
+  assert.ok(ghl.calls.some((c) => c[0] === 'addTags'));
+  assert.ok(ghl.calls.some((c) => c[0] === 'createOpportunity'));
+  assert.ok(lines.some((l) => l.msg === 'calendly.call_fields_failed'));
+  assert.ok(lines.some((l) => l.msg === 'calendly.invitee_created.ok'));
+});

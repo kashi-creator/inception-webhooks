@@ -8,8 +8,8 @@ import { makeFakeGhl, makeMemoryLog } from './helpers.js';
 
 const KEY = 'pb_test_key_0123456789';
 
-function buildApp({ ghl, log, key = KEY }) {
-  const phoneburnerRouter = createPhoneBurnerRouter({ ghl, log, webhookKey: key });
+function buildApp({ ghl, log, key = KEY, now }) {
+  const phoneburnerRouter = createPhoneBurnerRouter({ ghl, log, webhookKey: key, now });
   return createApp({ stripeRouter: express.Router(), calendlyRouter: express.Router(), phoneburnerRouter, log });
 }
 
@@ -124,7 +124,7 @@ test('phoneburner: payload with no email or phone is logged and skipped', async 
 });
 
 test('phoneburner: every mapped disposition has tags', () => {
-  for (const d of ['interested', 'not-now', 'booked', 'not-a-fit', 'dnc']) {
+  for (const d of ['interested', 'not-now', 'booked', 'not-a-fit', 'dnc', 'send-info', 'call-later']) {
     assert.ok(DISPOSITION_TAGS[d].length > 0, d);
   }
 });
@@ -135,4 +135,34 @@ test('phoneburner: router is not mounted when no key is configured', async () =>
   const app = buildApp({ ghl, log: createLogger({ stream }), key: '' });
   const res = await post(app, '/webhooks/phoneburner/interested?key=', PB_PAYLOAD);
   assert.equal(res.status, 404);
+});
+
+test('phoneburner: send-info tags msp:send-info and writes no fields', async () => {
+  const ghl = makeFakeGhl();
+  const { stream } = makeMemoryLog();
+  const app = buildApp({ ghl, log: createLogger({ stream }) });
+  const res = await post(app, `/webhooks/phoneburner/send-info?key=${KEY}`, PB_PAYLOAD);
+  assert.equal(res.status, 200);
+  await settle();
+  assert.deepEqual(ghl.calls.find((c) => c[0] === 'addTags')[2], ['msp:prospect', 'msp:send-info']);
+  assert.ok(!ghl.calls.some((c) => c[0] === 'setCustomFieldValues'));
+});
+
+test('phoneburner: call-later sets Follow-Up Date to today + 90 days, before the tag', async () => {
+  const ghl = makeFakeGhl();
+  const { stream } = makeMemoryLog();
+  // 2026-10-20 02:00 UTC is still Oct 19 in Florida, so "today" is Oct 19.
+  const now = () => Date.parse('2026-10-20T02:00:00Z');
+  const app = buildApp({ ghl, log: createLogger({ stream }), now });
+  const res = await post(app, `/webhooks/phoneburner/call-later?key=${KEY}`, PB_PAYLOAD);
+  assert.equal(res.status, 200);
+  await settle();
+  const fieldIdx = ghl.calls.findIndex((c) => c[0] === 'setCustomFieldValues');
+  const tagIdx = ghl.calls.findIndex((c) => c[0] === 'addTags');
+  assert.deepEqual(ghl.calls[fieldIdx], ['setCustomFieldValues', 'contact_default', [
+    { id: 'Wv5hY4I5fE5VDNV8RpL9', key: 'followup_date', value: '2027-01-17' },
+  ]]);
+  assert.deepEqual(ghl.calls[tagIdx][2], ['msp:prospect', 'msp:call-later']);
+  // Workflow 1B's first email merges Follow-Up Date, so it must be set first.
+  assert.ok(fieldIdx < tagIdx);
 });

@@ -46,6 +46,13 @@ export const STRIPE_CUSTOMER_ID_FIELD = Object.freeze({
   id:  'EmjJw4lXxDotA5OkQscO',
 });
 
+// MSP v3 sequence fields (created 2026-10-19). GHL has no date+time field type
+// (a DATE field drops the time), so Call Date is text: "Wednesday, October 21
+// at 2:30 PM EDT" in the invitee's timezone, ready to merge into emails.
+export const CALL_DATE_FIELD = Object.freeze({ id: 'gt9XuAP9kQLRurPmRFXD', key: 'call_date' });
+export const MEETING_LINK_FIELD = Object.freeze({ id: 'mb0boKK8jGwIffI6cyrA', key: 'meeting_link' });
+export const FOLLOW_UP_DATE_FIELD = Object.freeze({ id: 'Wv5hY4I5fE5VDNV8RpL9', key: 'followup_date' });
+
 export function readEnv(env = process.env) {
   const required = ['GHL_LOCATION_API_KEY', 'STRIPE_WEBHOOK_SECRET', 'CALENDLY_WEBHOOK_SIGNING_KEY'];
   const missing = required.filter((k) => !env[k]);

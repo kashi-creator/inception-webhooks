@@ -133,6 +133,22 @@ export function createGhl({ pit, locationId = LOCATION_ID, fetchImpl, detectSche
       await rawRequest({ pit, method: 'POST', path: `/contacts/${contactId}/notes`, body: { body }, fetchImpl });
     },
 
+    /**
+     * Writes custom fields the v0.1 client doesn't know about.
+     * `fields` is [{ id, key, value }]; same wire shape as setStripeCustomerId.
+     */
+    async setCustomFieldValues(contactId, fields) {
+      if (!contactId) throw new Error('setCustomFieldValues: contactId required');
+      if (!Array.isArray(fields) || fields.length === 0) return;
+      await rawRequest({
+        pit,
+        method: 'PUT',
+        path: `/contacts/${contactId}`,
+        body: { customFields: fields.map(({ id, key, value }) => ({ id, key, value, field_value: value })) },
+        fetchImpl,
+      });
+    },
+
     // ---- Phase 4 extension for stripe_customer_id ----
 
     /**

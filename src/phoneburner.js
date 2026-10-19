@@ -7,12 +7,14 @@
 // webhooks aren't signed, hence the shared key.
 //
 // The contact is upserted into GHL and tagged; the tag starts the matching MSP
-// workflow (msp:interested → Interested → Book, msp:not-now → Not Now Nurture).
+// workflow (msp:interested → Interested → Book, msp:not-now → Not Now Nurture,
+// msp:send-info → "Just send me an email", msp:call-later → "Hit me up in 3 months").
 // No-answer and gatekeeper stay inside PhoneBurner and have no route here.
 
 import express from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import { emailDomain } from './log.js';
+import { FOLLOW_UP_DATE_FIELD } from './config.js';
 
 export const DISPOSITION_TAGS = Object.freeze({
   interested: ['msp:prospect', 'msp:interested'],
@@ -22,7 +24,21 @@ export const DISPOSITION_TAGS = Object.freeze({
   booked: ['msp:prospect'],
   'not-a-fit': ['msp:disqualified'],
   dnc: ['DNC', 'compliance:dnc'],
+  'send-info': ['msp:prospect', 'msp:send-info'],
+  'call-later': ['msp:prospect', 'msp:call-later'],
 });
+
+// Dispositions that also set Follow-Up Date, in days from today (Eastern).
+const FOLLOW_UP_DAYS = Object.freeze({ 'call-later': 90 });
+const FOLLOW_UP_TIMEZONE = 'America/New_York';
+
+// YYYY-MM-DD for `days` after today's date in Florida.
+export function followUpDate(days, nowMs = Date.now()) {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: FOLLOW_UP_TIMEZONE }).format(new Date(nowMs));
+  const d = new Date(`${today}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
 
 const SOURCE_TAG = 'src:phoneburner';
 
@@ -69,7 +85,7 @@ export function extractContact(body) {
   };
 }
 
-export function createPhoneBurnerRouter({ ghl, log, webhookKey }) {
+export function createPhoneBurnerRouter({ ghl, log, webhookKey, now = Date.now }) {
   if (!ghl) throw new Error('createPhoneBurnerRouter: ghl required');
   if (!log) throw new Error('createPhoneBurnerRouter: log required');
 
@@ -113,6 +129,11 @@ export function createPhoneBurnerRouter({ ghl, log, webhookKey }) {
       });
       if (contact.city || contact.state) {
         await ghl.setAddress(contactId, { city: contact.city, state: contact.state });
+      }
+      // Before the tag: the workflow it starts merges Follow-Up Date right away.
+      const followUpDays = FOLLOW_UP_DAYS[disposition];
+      if (followUpDays) {
+        await ghl.setCustomFieldValues(contactId, [{ ...FOLLOW_UP_DATE_FIELD, value: followUpDate(followUpDays, now()) }]);
       }
       await ghl.addTags(contactId, tags);
       log.info('phoneburner.disposition.ok', {

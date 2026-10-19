@@ -11,8 +11,10 @@
 import express from 'express';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { emailDomain } from './log.js';
+import { CALL_DATE_FIELD, MEETING_LINK_FIELD } from './config.js';
 
 const REPLAY_WINDOW_SECONDS = 5 * 60;
+const DEFAULT_TIMEZONE = 'America/New_York';
 
 export function parseSignatureHeader(header) {
   if (typeof header !== 'string') return null;
@@ -64,6 +66,24 @@ function splitName(name) {
   const idx = name.indexOf(' ');
   if (idx < 0) return { firstName: name, lastName: undefined };
   return { firstName: name.slice(0, idx), lastName: name.slice(idx + 1) };
+}
+
+// "Wednesday, October 21 at 2:30 PM EDT" in the invitee's timezone.
+export function formatCallDate(startTime, timeZone) {
+  const date = new Date(startTime);
+  if (Number.isNaN(date.getTime())) return null;
+  const opts = {
+    weekday: 'long', month: 'long', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true, timeZoneName: 'short',
+  };
+  let parts;
+  try {
+    parts = new Intl.DateTimeFormat('en-US', { ...opts, timeZone: timeZone || DEFAULT_TIMEZONE }).formatToParts(date);
+  } catch {
+    parts = new Intl.DateTimeFormat('en-US', { ...opts, timeZone: DEFAULT_TIMEZONE }).formatToParts(date);
+  }
+  const p = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${p.weekday}, ${p.month} ${p.day} at ${p.hour}:${p.minute} ${p.dayPeriod} ${p.timeZoneName}`;
 }
 
 // Calendly sends bookings for every event type on the account (personal calls,
@@ -184,6 +204,20 @@ async function handleInviteeCreated({ ghl, log, body, t0 }) {
     lastName,
     source: 'src:calendly',
   });
+
+  // Call Date + Meeting Link go on before the booked tag: Booked Confirmation
+  // fires on that tag and merges both fields into its first email.
+  const scheduled = payload.scheduled_event || {};
+  const callFields = [];
+  const callDate = scheduled.start_time && formatCallDate(scheduled.start_time, invitee.timezone);
+  if (callDate) callFields.push({ ...CALL_DATE_FIELD, value: callDate });
+  const joinUrl = scheduled.location && scheduled.location.join_url;
+  if (joinUrl) callFields.push({ ...MEETING_LINK_FIELD, value: joinUrl });
+  if (callFields.length) {
+    try { await ghl.setCustomFieldValues(contactId, callFields); } catch (err) {
+      log.warn('calendly.call_fields_failed', { route: '/webhooks/calendly', contact_id: contactId, err: err && err.message ? err.message : String(err) });
+    }
+  }
 
   // Remove-then-add: a returning lead who already carries the tag would
   // otherwise not fire GHL's "tag added" trigger (Booked Confirmation, and the
