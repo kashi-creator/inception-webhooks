@@ -5,6 +5,7 @@ import {
   createCalendlyRouter,
   verifyCalendlySignature,
   parseSignatureHeader,
+  precallEmailCount,
 } from '../src/calendly.js';
 import { createApp } from '../src/app.js';
 import { createLogger } from '../src/log.js';
@@ -351,10 +352,15 @@ test('calendly: call time + Zoom link land on Call Date / Meeting Link before th
   }));
   const idx = ghl.calls.findIndex((c) => c[0] === 'setCustomFieldValues');
   assert.ok(idx >= 0, 'custom fields written');
-  assert.deepEqual(ghl.calls[idx], ['setCustomFieldValues', 'c_cd', [
+  const [, cid, fields] = ghl.calls[idx];
+  assert.equal(cid, 'c_cd');
+  assert.deepEqual(fields.slice(0, 2), [
     { id: 'gt9XuAP9kQLRurPmRFXD', key: 'call_date', value: 'Wednesday, October 21 at 2:30 PM EDT' },
     { id: 'mb0boKK8jGwIffI6cyrA', key: 'meeting_link', value: 'https://us02web.zoom.us/j/123456789' },
-  ]]);
+  ]);
+  assert.equal(fields[2].id, 'I6ixP2zu0oOQug7ibG14');
+  assert.equal(fields[2].key, 'precall_emails');
+  assert.equal(typeof fields[2].value, 'number');
   // Booked Confirmation fires on the tag and merges these fields, so they must exist first.
   const tagIdx = ghl.calls.findIndex((c) => c[0] === 'addTags' && c[2].includes('stage:disco-booked'));
   assert.ok(idx < tagIdx, 'fields written before stage:disco-booked is added');
@@ -396,4 +402,48 @@ test('calendly: a failed custom-field write still tags and creates the opportuni
   assert.ok(ghl.calls.some((c) => c[0] === 'createOpportunity'));
   assert.ok(lines.some((l) => l.msg === 'calendly.call_fields_failed'));
   assert.ok(lines.some((l) => l.msg === 'calendly.invitee_created.ok'));
+});
+
+// Pre-Call Daily Value sends at the next 8am (contact time) after booking, then
+// every 8am after, while the call is still more than 24h away. Max 6 emails.
+test('calendly: precallEmailCount counts 8am sends more than 24h before the call', () => {
+  const ny = 'America/New_York';
+  // Booked Mon 3pm, call Thu 2pm: Tue 8am + Wed 8am qualify, Thu 8am doesn't.
+  assert.equal(precallEmailCount(Date.parse('2026-10-19T19:00:00Z'), '2026-10-22T18:00:00Z', ny), 2);
+  // Booked 6am: the first send is the same morning at 8am.
+  assert.equal(precallEmailCount(Date.parse('2026-10-19T10:00:00Z'), '2026-10-21T18:00:00Z', ny), 2);
+  // Call tomorrow afternoon: none.
+  assert.equal(precallEmailCount(Date.parse('2026-10-19T19:00:00Z'), '2026-10-20T18:00:00Z', ny), 0);
+  // A week out: capped at 6.
+  assert.equal(precallEmailCount(Date.parse('2026-10-19T19:00:00Z'), '2026-10-27T18:00:00Z', ny), 6);
+  // Across the Nov 1 DST change: Oct 31, Nov 1, Nov 2 at 8am local all qualify.
+  assert.equal(precallEmailCount(Date.parse('2026-10-30T16:00:00Z'), '2026-11-03T19:00:00Z', ny), 3);
+  // Pacific invitee: 8am PT is later in UTC, so Wed 8am PT (15:00Z) is still >24h before Thu 18:00Z.
+  assert.equal(precallEmailCount(Date.parse('2026-10-19T22:00:00Z'), '2026-10-22T18:00:00Z', 'America/Los_Angeles'), 2);
+  assert.equal(precallEmailCount(Date.now(), 'not a date', ny), 0);
+});
+
+test('calendly: invitee timezone is saved on the contact before the booked tag', async () => {
+  const ghl = makeFakeGhl();
+  ghl.queueUpsert({ contactId: 'c_tz', created: true });
+  const app = buildApp({ ghl, cache: makeCache(), log: createLogger({ stream: makeMemoryLog().stream }) });
+  await postScheduled(app, scheduledPayload({
+    email: 'tz@msp.com', createdAt: '2026-10-19T15:10:00Z', timezone: 'America/Chicago',
+    scheduledEvent: { start_time: '2026-10-21T18:30:00Z', location: { join_url: 'https://zoom.us/j/3' } },
+  }));
+  const tzIdx = ghl.calls.findIndex((c) => c[0] === 'setContactFields' && c[2].timezone);
+  const tagIdx = ghl.calls.findIndex((c) => c[0] === 'addTags' && c[2].includes('stage:disco-booked'));
+  assert.deepEqual(ghl.calls[tzIdx], ['setContactFields', 'c_tz', { timezone: 'America/Chicago' }]);
+  assert.ok(tzIdx < tagIdx);
+});
+
+test('calendly: an invalid invitee timezone is not written to the contact', async () => {
+  const ghl = makeFakeGhl();
+  ghl.queueUpsert({ contactId: 'c_badtz', created: true });
+  const app = buildApp({ ghl, cache: makeCache(), log: createLogger({ stream: makeMemoryLog().stream }) });
+  await postScheduled(app, scheduledPayload({
+    email: 'badtz@msp.com', createdAt: '2026-10-19T15:11:00Z', timezone: 'Mars/Olympus',
+    scheduledEvent: { start_time: '2026-10-21T18:30:00Z' },
+  }));
+  assert.ok(!ghl.calls.some((c) => c[0] === 'setContactFields' && c[2].timezone));
 });

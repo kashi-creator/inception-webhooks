@@ -116,12 +116,13 @@ export function createGhl({ pit, locationId = LOCATION_ID, fetchImpl, detectSche
       await rawRequest({ pit, method: 'PUT', path: `/contacts/${contactId}`, body, fetchImpl });
     },
 
-    /** Writes standard phone/website fields from booking answers. */
-    async setContactFields(contactId, { phone, website } = {}) {
+    /** Writes standard phone/website/timezone fields from a booking. */
+    async setContactFields(contactId, { phone, website, timezone } = {}) {
       if (!contactId) throw new Error('setContactFields: contactId required');
       const body = {};
       if (phone) body.phone = phone;
       if (website) body.website = website;
+      if (timezone) body.timezone = timezone;
       if (Object.keys(body).length === 0) return;
       await rawRequest({ pit, method: 'PUT', path: `/contacts/${contactId}`, body, fetchImpl });
     },

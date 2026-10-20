@@ -51,6 +51,9 @@ export const STRIPE_CUSTOMER_ID_FIELD = Object.freeze({
 // at 2:30 PM EDT" in the invitee's timezone, ready to merge into emails.
 export const CALL_DATE_FIELD = Object.freeze({ id: 'gt9XuAP9kQLRurPmRFXD', key: 'call_date' });
 export const MEETING_LINK_FIELD = Object.freeze({ id: 'mb0boKK8jGwIffI6cyrA', key: 'meeting_link' });
+// How many Pre-Call Daily Value emails fit before the call (0-6); the v3
+// workflow checks it before each daily email.
+export const PRECALL_EMAILS_FIELD = Object.freeze({ id: 'I6ixP2zu0oOQug7ibG14', key: 'precall_emails' });
 export const FOLLOW_UP_DATE_FIELD = Object.freeze({ id: 'Wv5hY4I5fE5VDNV8RpL9', key: 'followup_date' });
 
 export function readEnv(env = process.env) {

@@ -11,7 +11,7 @@
 import express from 'express';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { emailDomain } from './log.js';
-import { CALL_DATE_FIELD, MEETING_LINK_FIELD } from './config.js';
+import { CALL_DATE_FIELD, MEETING_LINK_FIELD, PRECALL_EMAILS_FIELD } from './config.js';
 
 const REPLAY_WINDOW_SECONDS = 5 * 60;
 const DEFAULT_TIMEZONE = 'America/New_York';
@@ -84,6 +84,57 @@ export function formatCallDate(startTime, timeZone) {
   }
   const p = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
   return `${p.weekday}, ${p.month} ${p.day} at ${p.hour}:${p.minute} ${p.dayPeriod} ${p.timeZoneName}`;
+}
+
+function isTimeZone(tz) {
+  if (!tz) return false;
+  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch { return false; }
+}
+
+// Wall-clock parts of `ms` in `timeZone`.
+function zonedParts(ms, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone, hourCycle: 'h23',
+    year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric',
+  }).formatToParts(new Date(ms));
+  const p = Object.fromEntries(parts.map(({ type, value }) => [type, Number(value)]));
+  return { y: p.year, m: p.month, d: p.day, h: p.hour, min: p.minute, s: p.second };
+}
+
+// UTC ms for a wall-clock time in `timeZone` (DST-aware).
+function zonedToUtc(y, m, d, h, timeZone) {
+  const guess = Date.UTC(y, m - 1, d, h);
+  const offsetAt = (ms) => {
+    const p = zonedParts(ms, timeZone);
+    return Date.UTC(p.y, p.m - 1, p.d, p.h, p.min, p.s) - ms;
+  };
+  const first = guess - offsetAt(guess);
+  return guess - offsetAt(first);
+}
+
+const PRECALL_SEND_HOUR = 8;
+const PRECALL_MAX = 6;
+// GHL waits 2 min after the tag, then resumes at the next 8am.
+const PRECALL_START_DELAY_MS = 3 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Pre-Call Daily Value sends at the next 8am after booking, then every 8am,
+// while the call is still more than 24h away. Mirrors the v3 workflow's waits.
+export function precallEmailCount(bookedMs, startTime, timeZone) {
+  const start = Date.parse(startTime);
+  if (!Number.isFinite(start)) return 0;
+  const tz = isTimeZone(timeZone) ? timeZone : DEFAULT_TIMEZONE;
+  const after = bookedMs + PRECALL_START_DELAY_MS;
+  const today = zonedParts(after, tz);
+  let count = 0;
+  for (let offset = 0; count < PRECALL_MAX && offset < PRECALL_MAX + 1; offset++) {
+    const day = new Date(Date.UTC(today.y, today.m - 1, today.d + offset));
+    const send = zonedToUtc(day.getUTCFullYear(), day.getUTCMonth() + 1, day.getUTCDate(), PRECALL_SEND_HOUR, tz);
+    if (send <= after) continue;
+    if (start - send <= DAY_MS) break;
+    count++;
+  }
+  return count;
 }
 
 // Calendly sends bookings for every event type on the account (personal calls,
@@ -162,7 +213,7 @@ export function createCalendlyRouter({ ghl, idempotencyCache, log, signingKey, n
     try {
       switch (eventType) {
         case 'invitee.created':
-          await handleInviteeCreated({ ghl, log, body, t0 });
+          await handleInviteeCreated({ ghl, log, body, t0, now });
           break;
         case 'invitee.canceled':
           await handleInviteeCanceled({ ghl, log, body, t0 });
@@ -188,7 +239,7 @@ export function createCalendlyRouter({ ghl, idempotencyCache, log, signingKey, n
   return router;
 }
 
-async function handleInviteeCreated({ ghl, log, body, t0 }) {
+async function handleInviteeCreated({ ghl, log, body, t0, now = Date.now }) {
   const payload = body.payload || {};
   const invitee = payload.invitee || payload;
   const email = invitee.email;
@@ -205,18 +256,23 @@ async function handleInviteeCreated({ ghl, log, body, t0 }) {
     source: 'src:calendly',
   });
 
-  // Call Date + Meeting Link go on before the booked tag: Booked Confirmation
-  // fires on that tag and merges both fields into its first email.
+  // Call Date, Meeting Link, Pre-Call Emails and the contact's timezone go on
+  // before the booked tag: Booked Confirmation and Pre-Call Daily Value fire on
+  // that tag, merge the fields, and send at 8am contact time.
   const scheduled = payload.scheduled_event || {};
   const callFields = [];
   const callDate = scheduled.start_time && formatCallDate(scheduled.start_time, invitee.timezone);
   if (callDate) callFields.push({ ...CALL_DATE_FIELD, value: callDate });
   const joinUrl = scheduled.location && scheduled.location.join_url;
   if (joinUrl) callFields.push({ ...MEETING_LINK_FIELD, value: joinUrl });
-  if (callFields.length) {
-    try { await ghl.setCustomFieldValues(contactId, callFields); } catch (err) {
-      log.warn('calendly.call_fields_failed', { route: '/webhooks/calendly', contact_id: contactId, err: err && err.message ? err.message : String(err) });
-    }
+  if (callDate) {
+    callFields.push({ ...PRECALL_EMAILS_FIELD, value: precallEmailCount(now(), scheduled.start_time, invitee.timezone) });
+  }
+  try {
+    if (callFields.length) await ghl.setCustomFieldValues(contactId, callFields);
+    if (isTimeZone(invitee.timezone)) await ghl.setContactFields(contactId, { timezone: invitee.timezone });
+  } catch (err) {
+    log.warn('calendly.call_fields_failed', { route: '/webhooks/calendly', contact_id: contactId, err: err && err.message ? err.message : String(err) });
   }
 
   // Remove-then-add: a returning lead who already carries the tag would
