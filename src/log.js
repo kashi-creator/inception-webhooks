@@ -11,6 +11,8 @@ const SAFE_KEYS = new Set([
   'email_domain', 'tier', 'pipeline', 'stage', 'latency_ms', 'ok', 'err',
   'idempotent_skip', 'invoice_id', 'subscription_id', 'stripe_customer_id',
   'invitee_uri', 'cancel_reason', 'payment_link', 'opportunity_id',
+  // Field paths only (never values): e.g. a webhook payload's shape.
+  'paths',
 ]);
 
 export function emailDomain(email) {

@@ -70,12 +70,27 @@ function pick(pairs, patterns, test = () => true) {
   return undefined;
 }
 
+// The lead lives under `contact` (PhoneBurner's call-done shape) or, in flat
+// form posts, at the top level. Anything about the PhoneBurner user who made
+// the call (user/owner/agent/rep/member/account/caller) is never the prospect.
+const LEAD_ROOTS = ['contact', 'lead', 'prospect'];
+const NOT_LEAD = /^(user|users|owner|agent|rep|sales_rep|member|members|account|caller|callerid|dialsession|team)(_|$)/;
+// Our own addresses: erik@, kashi@, vendor+…@ and the send subdomain.
+const INTERNAL_EMAIL = /@([a-z0-9-]+\.)*inception-emails\.com$/i;
+
+function leadPairs(pairs) {
+  const scoped = pairs.filter(([p]) => LEAD_ROOTS.includes(p.split('.')[0]));
+  const usable = scoped.length ? scoped : pairs.filter(([p]) => !p.includes('.'));
+  return usable.filter(([p]) => !p.split('.').some((seg) => NOT_LEAD.test(seg)));
+}
+
 export function extractContact(body) {
-  const pairs = flatten(body);
+  const pairs = leadPairs(flatten(body));
   const leaf = (name) => new RegExp(`(^|\\.)${name}$`);
   return {
-    email: pick(pairs, [/email_address$/, leaf('email'), /email/], (v) => v.includes('@')),
-    phone: pick(pairs, [/primary_phone\.(raw_phone|phone)$/, /raw_phone$/, leaf('phone'), /phone_number$/, /phone/],
+    email: pick(pairs, [/email_address$/, leaf('email'), /email/],
+      (v) => v.includes('@') && !INTERNAL_EMAIL.test(v)),
+    phone: pick(pairs, [/primary_phone\.(raw_phone|phone)$/, /raw_phone$/, leaf('phone'), /phones\.0\.number$/, /phone_number$/, /phone/],
       (v) => /\d{7,}/.test(v.replace(/\D/g, ''))),
     firstName: pick(pairs, [leaf('first_name'), leaf('firstname')]),
     lastName: pick(pairs, [leaf('last_name'), leaf('lastname')]),
@@ -83,6 +98,12 @@ export function extractContact(body) {
     city: pick(pairs, [leaf('city')]),
     state: pick(pairs, [leaf('state')]),
   };
+}
+
+// Field paths of a payload with values left out, so the real PhoneBurner
+// format can be read from the logs without logging anyone's details.
+export function payloadShape(body) {
+  return flatten(body).map(([p]) => p.replace(/\.\d+(\.|$)/g, '.[]$1')).filter((p, i, a) => a.indexOf(p) === i);
 }
 
 export function createPhoneBurnerRouter({ ghl, log, webhookKey, now = Date.now }) {
@@ -110,6 +131,7 @@ export function createPhoneBurnerRouter({ ghl, log, webhookKey, now = Date.now }
     const body = req.body || {};
     res.status(200).json({ received: true });
 
+    log.info('phoneburner.payload_shape', { route, event_type: disposition, paths: payloadShape(body) });
     const contact = extractContact(body);
     if (!contact.email && !contact.phone) {
       log.warn('phoneburner.missing_identity', {

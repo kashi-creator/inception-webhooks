@@ -166,3 +166,73 @@ test('phoneburner: call-later sets Follow-Up Date to today + 90 days, before the
   // Workflow 1B's first email merges Follow-Up Date, so it must be set first.
   assert.ok(fieldIdx < tagIdx);
 });
+
+// PhoneBurner's documented api_calldone shape: the lead lives under `contact`,
+// with no email. The account-level disposition webhook also carries the
+// PhoneBurner user's own details somewhere outside `contact`; that address
+// (erik@inception-emails.com) must never become the prospect's email.
+const PB_CALLDONE_NO_EMAIL = {
+  status: 'Send info',
+  duration: 54,
+  call_id: '1767709',
+  connected: '1',
+  user: { email_address: 'erik@inception-emails.com', first_name: 'Erik', last_name: 'Duhn', phone: '3802575027' },
+  contact: {
+    user_id: '9988776',
+    lead_id: 'abc123',
+    phone: '9495551212',
+    first_name: 'Colby',
+    last_name: 'Flesher',
+    phones: [{ number: '9495551212', phone_type: 'Home', phone_label: null }],
+    addresses: [{ address: '123 Main street', city: 'BIRMINGHAM', state: 'Alabama', zip: '35203' }],
+  },
+};
+
+test('phoneburner: agent/user email is never taken as the prospect email', () => {
+  const c = extractContact(PB_CALLDONE_NO_EMAIL);
+  assert.equal(c.email, undefined);
+  assert.equal(c.phone, '9495551212');
+  assert.deepEqual([c.firstName, c.lastName, c.city, c.state], ['Colby', 'Flesher', 'BIRMINGHAM', 'Alabama']);
+});
+
+test('phoneburner: contact email wins even when an agent block comes first', () => {
+  const c = extractContact({
+    agent: { email: 'erik@inception-emails.com', phone: '3802575027' },
+    owner_email: 'kashi@inception-emails.com',
+    contact: { first_name: 'Dana', primary_email: { email_address: 'dana@acme-it.com' }, primary_phone: { raw_phone: '8135550142' } },
+  });
+  assert.equal(c.email, 'dana@acme-it.com');
+  assert.equal(c.phone, '8135550142');
+  assert.equal(c.firstName, 'Dana');
+});
+
+test('phoneburner: an @inception-emails.com address is rejected even under contact', () => {
+  const c = extractContact({ contact: { email: 'erik@inception-emails.com', phone: '9495551212', first_name: 'X' } });
+  assert.equal(c.email, undefined);
+  assert.equal(c.phone, '9495551212');
+  assert.equal(extractContact({ email: 'vendor+abc@send.inception-emails.com', phone: '8135550100' }).email, undefined);
+});
+
+test('phoneburner: a lead with no email is upserted by phone only', async () => {
+  const ghl = makeFakeGhl();
+  const { lines, stream } = makeMemoryLog();
+  const app = buildApp({ ghl, log: createLogger({ stream }) });
+  await post(app, `/webhooks/phoneburner/send-info?key=${KEY}`, PB_CALLDONE_NO_EMAIL);
+  await settle();
+  const upsert = ghl.calls.find((c) => c[0] === 'upsertContact')[1];
+  assert.equal(upsert.email, undefined);
+  assert.equal(upsert.phone, '9495551212');
+  assert.equal(upsert.firstName, 'Colby');
+  // The payload's shape (paths only, no values) is logged so the real format can be checked.
+  const shape = lines.find((l) => l.msg === 'phoneburner.payload_shape');
+  assert.ok(shape, 'payload shape logged');
+  assert.ok(!JSON.stringify(shape).includes('erik@'), 'no values in the shape log');
+  assert.ok(!JSON.stringify(shape).includes('9495551212'));
+});
+
+test('phoneburner: agent fields are never used for name or phone when contact has none', () => {
+  const c = extractContact({ status: 'Interested', user: { first_name: 'Erik', phone: '3802575027', email: 'erik@inception-emails.com' }, contact: { lead_id: 'x' } });
+  assert.equal(c.email, undefined);
+  assert.equal(c.phone, undefined);
+  assert.equal(c.firstName, undefined);
+});
